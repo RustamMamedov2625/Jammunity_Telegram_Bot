@@ -2,6 +2,7 @@ package com.telegrambot.telegrambotjammunity.handler;
 
 import com.telegrambot.telegrambotjammunity.service.LinkDetectionService;
 import com.telegrambot.telegrambotjammunity.service.VideoEmbedService;
+import com.telegrambot.telegrambotjammunity.service.VideoProcessingService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
@@ -20,13 +21,14 @@ import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 public class VideoLinkHandler {
 
     private final LinkDetectionService linkDetectionService;
-    private final VideoEmbedService videoEmbedService;
+    private final VideoProcessingService videoProcessingService;// ЗАМЕНИЛИ VideoEmbedService
+
 
     // КОНСТРУКТОР - Spring автоматически передает сюда нужные сервисы
     public VideoLinkHandler(LinkDetectionService linkDetectionService,
-                            VideoEmbedService videoEmbedService) {
+                            VideoProcessingService videoProcessingService) { // ОБНОВИЛИ КОНСТРУКТОР
         this.linkDetectionService = linkDetectionService;
-        this.videoEmbedService = videoEmbedService;
+        this.videoProcessingService = videoProcessingService;
     }
 
     /**
@@ -61,26 +63,18 @@ public class VideoLinkHandler {
             String videoLink = linkDetectionService.getFirstVideoLink(message.getText());
 
             if (videoLink != null) {
-                // Шаг 2: Проверяем, поддерживается ли встроенное воспроизведение
-                if (videoEmbedService.supportsEmbedding(videoLink)) {
-                    // Шаг 3: Преобразуем ссылку в формат для встроенного видео
-                    String embeddedMessage = videoEmbedService.createEmbeddedVideoMessage(videoLink);
+                // ИСПОЛЬЗУЕМ НОВЫЙ СЕРВИС ОБРАБОТКИ
+                String responseText = videoProcessingService.processVideoLink(videoLink);
 
-                    // Шаг 4: Создаем и настраиваем сообщение для отправки
-                    SendMessage response = new SendMessage();
-                    response.setChatId(message.getChatId().toString()); // В какой чат отправлять
-                    response.setText(embeddedMessage); // Текст сообщения
-                    response.setReplyToMessageId(message.getMessageId()); // Ответ на конкретное сообщение
-                    response.setParseMode("Markdown"); // ВКЛЮЧАЕМ Markdown для встроенных видео!
+                SendMessage response = new SendMessage();
+                response.setChatId(message.getChatId().toString());
+                response.setText(responseText);
+                response.setReplyToMessageId(message.getMessageId());
+                response.setParseMode("Markdown"); // Важно для встроенных видео!
 
-                    // Шаг 5: Отправляем сообщение
-                    sender.execute(response);
-                    log.info("✅ Отправлено встроенное видео для ссылки: {} от пользователя {}",
-                            videoLink, message.getFrom().getUserName());
-                } else {
-                    // Если ссылка не поддерживает встроенное воспроизведение
-                    log.warn("❌ Ссылка не поддерживает встроенное воспроизведение: {}", videoLink);
-                }
+                sender.execute(response);
+                log.info("✅ Обработана видео-ссылка: {} от пользователя {}",
+                        videoLink, message.getFrom().getUserName());
             }
         } catch (TelegramApiException e) {
             log.error("🚨 Ошибка при отправке встроенного видео", e);
