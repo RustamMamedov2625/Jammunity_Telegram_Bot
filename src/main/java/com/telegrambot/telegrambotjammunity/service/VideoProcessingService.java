@@ -3,6 +3,8 @@ package com.telegrambot.telegrambotjammunity.service;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.io.File;
+
 /**
  * УЛУЧШЕННЫЙ СЕРВИС ДЛЯ ОБРАБОТКИ ВИДЕО
  *
@@ -18,54 +20,63 @@ import org.springframework.stereotype.Service;
 public class VideoProcessingService {
 
     private final VideoEmbedService videoEmbedService;
+    private final VideoDownloadService videoDownloadService;
 
-    public VideoProcessingService(VideoEmbedService videoEmbedService) {
+    public VideoProcessingService(VideoEmbedService videoEmbedService,
+                                  VideoDownloadService videoDownloadService) {
         this.videoEmbedService = videoEmbedService;
+        this.videoDownloadService = videoDownloadService;
     }
 
     /**
-     * ОСНОВНОЙ МЕТОД ОБРАБОТКИ ВИДЕО-ССЫЛКИ
-     *
-     * Пытается использовать встроенные плееры.
-     * В будущем можно добавить fallback на скачивание.
-     *
-     * @param videoLink - ссылка на видео
-     * @return текст сообщения для отправки в Telegram
+     * ОБРАБАТЫВАЕТ ВИДЕО-ССЫЛКУ С ВЫБОРОМ СТРАТЕГИИ
      */
-    public String processVideoLink(String videoLink) {
+    public ProcessResult processVideoLink(String videoLink) {
         log.info("Обрабатываем видео-ссылку: {}", videoLink);
 
-        // СТРАТЕГИЯ 1: Встроенные плееры (рекомендуемая)
+        // СТРАТЕГИЯ 1: Встроенные плееры (приоритет)
         if (videoEmbedService.supportsEmbedding(videoLink)) {
-            log.debug("Используем встроенный плеер для: {}", videoLink);
-            return videoEmbedService.createEmbeddedVideoMessage(videoLink);
+            String embeddedMessage = videoEmbedService.createEmbeddedVideoMessage(videoLink);
+            return new ProcessResult(embeddedMessage, Strategy.EMBEDDED);
         }
 
-        // СТРАТЕГИЯ 2: Запасной вариант - просто показываем ссылку
-        // В будущем здесь можно добавить скачивание
-        log.warn("Ссылка не поддерживает встроенное воспроизведение: {}", videoLink);
-        return "🔗 Ссылка на видео: " + videoLink +
-                "\n\nℹ️ Для просмотра перейдите по ссылке";
+        // СТРАТЕГИЯ 2: Скачивание (если включено и поддерживается)
+        if (videoDownloadService.canDownloadFromPlatform(videoLink)) {
+            log.info("🔄 Используем стратегию скачивания для: {}", videoLink);
+            return new ProcessResult(videoLink, Strategy.DOWNLOAD);
+        }
+
+        // СТРАТЕГИЯ 3: Запасной вариант
+        log.warn("⚠️ Ссылка не поддерживается: {}", videoLink);
+        String fallbackMessage = "🔗 Ссылка на видео: " + videoLink;
+        return new ProcessResult(fallbackMessage, Strategy.FALLBACK);
     }
 
     /**
-     * ПРОВЕРЯЕТ, НУЖНО ЛИ СКАЧИВАТЬ ВИДЕО
-     *
-     * Этот метод определяет, когда нам может понадобиться
-     * скачивание вместо встроенного плеера.
-     *
-     * Сейчас всегда возвращает false, но в будущем можно добавить логику:
-     * - Если платформа не поддерживает встроенные видео
-     * - Если пользователь запросил скачивание
-     * - Для определенных типов контента
+     * ВЫПОЛНЯЕТ СКАЧИВАНИЕ И ОТПРАВКУ ВИДЕО
      */
-    public boolean shouldDownloadVideo(String videoLink) {
-        // Сейчас отключаем скачивание - используем только встроенные плееры
-        return false;
+    public void executeDownload(String videoLink, Long chatId,
+                                org.telegram.telegrambots.meta.bots.AbsSender sender) {
+        File downloadedVideo = videoDownloadService.downloadVideo(videoLink);
+        if (downloadedVideo != null) {
+            videoDownloadService.sendVideoAsFile(downloadedVideo, chatId, sender, videoLink);
+        } else {
+            log.error("❌ Не удалось скачать видео: {}", videoLink);
+        }
+    }
 
-        // Пример будущей логики:
-        // return !videoEmbedService.supportsEmbedding(videoLink) ||
-        //        videoLink.contains("private-video.com") ||
-        //        userRequestedDownload;
+    // DTO для результата обработки
+    public static class ProcessResult {
+        public final String message;
+        public final Strategy strategy;
+
+        public ProcessResult(String message, Strategy strategy) {
+            this.message = message;
+            this.strategy = strategy;
+        }
+    }
+
+    public enum Strategy {
+        EMBEDDED, DOWNLOAD, FALLBACK
     }
 }

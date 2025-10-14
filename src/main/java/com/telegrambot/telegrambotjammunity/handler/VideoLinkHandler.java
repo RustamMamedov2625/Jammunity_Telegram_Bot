@@ -1,6 +1,7 @@
 package com.telegrambot.telegrambotjammunity.handler;
 
 import com.telegrambot.telegrambotjammunity.service.LinkDetectionService;
+import com.telegrambot.telegrambotjammunity.service.VideoDownloadService;
 import com.telegrambot.telegrambotjammunity.service.VideoEmbedService;
 import com.telegrambot.telegrambotjammunity.service.VideoProcessingService;
 import lombok.extern.slf4j.Slf4j;
@@ -8,6 +9,8 @@ import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.Message;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
+
+import java.io.File;
 
 /**
  * ОБРАБОТЧИК ВИДЕО-ССЫЛОК
@@ -21,14 +24,16 @@ import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 public class VideoLinkHandler {
 
     private final LinkDetectionService linkDetectionService;
-    private final VideoProcessingService videoProcessingService;// ЗАМЕНИЛИ VideoEmbedService
+    private final VideoDownloadService videoDownloadService;// ЗАМЕНИЛИ VideoEmbedService
+    private final VideoEmbedService videoEmbedService;
 
 
     // КОНСТРУКТОР - Spring автоматически передает сюда нужные сервисы
     public VideoLinkHandler(LinkDetectionService linkDetectionService,
-                            VideoProcessingService videoProcessingService) { // ОБНОВИЛИ КОНСТРУКТОР
+                            VideoDownloadService videoDownloadService, VideoEmbedService videoEmbedService) { // ОБНОВИЛИ КОНСТРУКТОР
         this.linkDetectionService = linkDetectionService;
-        this.videoProcessingService = videoProcessingService;
+        this.videoDownloadService = videoDownloadService;
+        this.videoEmbedService = videoEmbedService;
     }
 
     /**
@@ -59,25 +64,65 @@ public class VideoLinkHandler {
      */
     public void handle(Message message, org.telegram.telegrambots.meta.bots.AbsSender sender) {
         try {
-            // Шаг 1: Достаем ссылку из текста сообщения
             String videoLink = linkDetectionService.getFirstVideoLink(message.getText());
 
             if (videoLink != null) {
-                // ИСПОЛЬЗУЕМ НОВЫЙ СЕРВИС ОБРАБОТКИ
-                String responseText = videoProcessingService.processVideoLink(videoLink);
+                log.info("🔍 Обнаружена видео-ссылка: {}", videoLink);
 
-                SendMessage response = new SendMessage();
-                response.setChatId(message.getChatId().toString());
-                response.setText(responseText);
-                response.setReplyToMessageId(message.getMessageId());
-                response.setParseMode("Markdown"); // Важно для встроенных видео!
+                // Пытаемся скачать и отправить видео
+                if (videoDownloadService.canDownloadFromPlatform(videoLink)) {
+                    log.info("🔄 Запускаем скачивание и отправку видео...");
 
-                sender.execute(response);
-                log.info("✅ Обработана видео-ссылка: {} от пользователя {}",
-                        videoLink, message.getFrom().getUserName());
+                    // Шаг 1: Скачиваем видео
+                    File downloadedVideo = videoDownloadService.downloadVideo(videoLink);
+
+                    if (downloadedVideo != null && downloadedVideo.exists()) {
+                        // Шаг 2: Отправляем реальное видео файлом
+                        videoDownloadService.sendVideoAsFile(downloadedVideo, message.getChatId(), sender, videoLink);
+                        log.info("✅ Видео успешно скачано и отправлено");
+                    } else {
+                        log.error("❌ Не удалось скачать видео, используем встроенный плеер");
+                        sendEmbeddedVideo(videoLink, message, sender);
+                    }
+                } else {
+                    // Если скачивание отключено или платформа не поддерживается
+                    log.info("ℹ️ Используем встроенный плеер для: {}", videoLink);
+                    sendEmbeddedVideo(videoLink, message, sender);
+                }
             }
+        } catch (Exception e) {
+            log.error("🚨 Критическая ошибка при обработке видео-ссылки", e);
+
+            // В случае ошибки пытаемся отправить сообщение об ошибке
+            try {
+                SendMessage errorMsg = new SendMessage();
+                errorMsg.setChatId(message.getChatId().toString());
+                errorMsg.setText("❌ Произошла ошибка при обработке видео. Попробуйте позже.");
+                errorMsg.setReplyToMessageId(message.getMessageId());
+                sender.execute(errorMsg);
+            } catch (TelegramApiException ex) {
+                log.error("🚨 Не удалось отправить сообщение об ошибке", ex);
+            }
+        }
+    }
+
+    // Вспомогательный метод для отправки встроенного видео
+    private void sendEmbeddedVideo(String videoLink, Message message,
+                                   org.telegram.telegrambots.meta.bots.AbsSender sender) {
+        try {
+            String embeddedMessage = videoEmbedService.createEmbeddedVideoMessage(videoLink);
+
+            SendMessage response = new SendMessage();
+            response.setChatId(message.getChatId().toString());
+            response.setText(embeddedMessage);
+            response.setReplyToMessageId(message.getMessageId());
+            response.setParseMode("Markdown");
+
+            sender.execute(response);
+            log.info("✅ Отправлено встроенное видео");
+
         } catch (TelegramApiException e) {
-            log.error("🚨 Ошибка при отправке встроенного видео", e);
+            log.error("❌ Ошибка отправки встроенного видео", e);
         }
     }
 
